@@ -1,6 +1,9 @@
 name: Build Armbian for Radxa Rock 4D
 
 on:
+  push:
+    branches:
+      - main
   schedule:
     # 每天 UTC 02:30 检查 armbian/ci 是否发布了新的稳定版本
     # 注意：GitHub 会在仓库 60 天无提交后自动停用计划任务
