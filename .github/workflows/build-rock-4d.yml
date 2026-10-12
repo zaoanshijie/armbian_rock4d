@@ -1,0 +1,153 @@
+name: Build Armbian for Radxa Rock 4D
+
+on:
+  schedule:
+    # 每天 UTC 02:30 检查 armbian/ci 是否发布了新的稳定版本
+    # 注意：GitHub 会在仓库 60 天无提交后自动停用计划任务
+    - cron: "30 2 * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "强制重新构建（即使该版本镜像已存在）"
+        type: boolean
+        default: false
+      kernel_branch:
+        description: "内核分支"
+        type: choice
+        default: edge
+        options:
+          - edge
+          - vendor
+      ubuntu_release:
+        description: "Ubuntu 用户空间版本"
+        type: choice
+        default: resolute
+        options:
+          - resolute
+          - noble
+
+# 需要写权限以创建 GitHub Release
+permissions:
+  contents: write
+
+# 不允许两个构建同时运行：排队而不是取消
+concurrency:
+  group: armbian-rock-4d
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: 检查 Armbian 新版本
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+      build_kde: ${{ steps.check.outputs.build_kde }}
+      build_cli: ${{ steps.check.outputs.build_cli }}
+    steps:
+      - name: 计算目标版本并决定需要构建哪些镜像
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FORCE: ${{ inputs.force == true }}
+        run: |
+          set -euo pipefail
+
+          # 与 armbian/build action 内部一致的版本逻辑：
+          # 取 armbian/ci 最新稳定 tag（形如 26.8.10），patch 号 +1
+          latest="$(gh api --paginate repos/armbian/ci/releases \
+            --jq '.[] | .tag_name | select(test("^[0-9]+[.][0-9]+[.][0-9]+$"))' \
+            | sort -V | tail -1)"
+          if [ -z "$latest" ]; then
+            echo "::error::在 armbian/ci 中找不到稳定版本"
+            exit 1
+          fi
+          IFS='.' read -r major minor patch <<< "$latest"
+          version="${major}.${minor}.$((patch + 1))"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "armbian/ci 最新稳定版: ${latest} -> 目标镜像版本: ${version}"
+
+          # 检查本仓库该版本的 Release 中已有哪些镜像
+          assets="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${version}" \
+            --jq '.assets[].name' 2>/dev/null || true)"
+          if [ -z "$assets" ]; then
+            echo "版本 ${version} 尚未构建过。"
+          fi
+
+          # KDE 镜像文件名以 _kde-plasma_desktop.img.xz 结尾；
+          # CLI(server) 镜像没有任何 _desktop / _minimal 后缀
+          kde_count="$(printf '%s\n' "$assets" | grep -cE '_kde-plasma_desktop\.img\.xz$' || true)"
+          cli_count="$(printf '%s\n' "$assets" | grep '\.img\.xz$' | grep -cvE '_(desktop|minimal)' || true)"
+
+          if [ "$FORCE" = "true" ]; then
+            build_kde=true
+            build_cli=true
+          else
+            if [ "${kde_count:-0}" -ge 1 ]; then build_kde=false; else build_kde=true; fi
+            if [ "${cli_count:-0}" -ge 1 ]; then build_cli=false; else build_cli=true; fi
+          fi
+
+          echo "build_kde=${build_kde}" >> "$GITHUB_OUTPUT"
+          echo "build_cli=${build_cli}" >> "$GITHUB_OUTPUT"
+          echo "构建 KDE 镜像: ${build_kde}（已存在 ${kde_count:-0} 个）"
+          echo "构建 CLI 镜像: ${build_cli}（已存在 ${cli_count:-0} 个）"
+
+  build:
+    name: 构建 ${{ matrix.ui == 'server' && 'CLI' || 'KDE' }} 镜像
+    needs: check
+    if: >-
+      needs.check.outputs.build_kde == 'true' ||
+      needs.check.outputs.build_cli == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        ui:
+          - kde-plasma
+          - server
+    steps:
+      - name: 使用 Armbian 构建框架构建镜像
+        if: >-
+          (matrix.ui == 'kde-plasma' && needs.check.outputs.build_kde == 'true') ||
+          (matrix.ui == 'server' && needs.check.outputs.build_cli == 'true')
+        uses: armbian/build@main
+        with:
+          armbian_token: ${{ secrets.GITHUB_TOKEN }}
+          armbian_target: build
+          armbian_board: radxa-rock-4d
+          # 与官方 Rock 4D 镜像一致：edge 内核 + Ubuntu 26.04 LTS (resolute)
+          armbian_kernel_branch: ${{ inputs.kernel_branch || 'edge' }}
+          armbian_release: ${{ inputs.ubuntu_release || 'resolute' }}
+          armbian_ui: ${{ matrix.ui }}
+          armbian_version: ${{ needs.check.outputs.version }}
+          # 清理 GitHub runner 磁盘空间（官方推荐）
+          armbian_runner_clean: yes
+          # 先以 pre-release 上传，全部镜像就绪后由 promote 任务转正
+          armbian_release_prerelease: true
+          armbian_release_title: "Armbian ${{ needs.check.outputs.version }} for Radxa Rock 4D"
+          armbian_release_body: |
+            针对 Radxa Rock 4D（Rockchip RK3576）自动构建的 Armbian 镜像。
+
+            包含的镜像：
+            - Ubuntu CLI（server，无桌面）
+            - Ubuntu KDE Plasma 桌面版
+
+            说明：
+            - 默认登录：root / 1234（首次登录会要求修改）
+            - 构建框架：https://github.com/armbian/build
+            - Armbian 出现新版本时会自动重新构建
+
+  promote:
+    name: 将 Release 转为正式版
+    needs: [check, build]
+    if: ${{ always() && needs.build.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: 标记为 latest 并取消 pre-release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          gh release edit "${VERSION}" --repo "${GITHUB_REPOSITORY}" \
+            --prerelease=false --latest
+          echo "Release ${VERSION} 已发布为正式版。"
