@@ -1,32 +1,26 @@
-name: Debug failed run logs
+name: One-shot release maintenance
 
-# 已弃用：主工作流的 report-failure 任务会在构建失败时自动发布日志。
-# 仅保留手动触发以备调试使用。
+# 一次性修正 Release 26.8.12 的标题并转正（该版本由旧版版本逻辑构建，
+# 标题渲染成了 26.8.11）。运行一次后即无事可做，后续将删除本文件。
 on:
+  push:
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
-  contents: read
-  issues: write
+  contents: write
 
 jobs:
-  dump-logs:
+  fix-release:
     runs-on: ubuntu-latest
     steps:
-      - name: 导出指定运行的失败日志并发 Issue
+      - name: 修正 Release 标题并标记为 latest
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          RUN_ID="${RUN_ID:-38241709451}"
-          gh run view "${RUN_ID}" --repo "${GITHUB_REPOSITORY}" --log-failed > /tmp/all.log || true
-          tail -n 400 /tmp/all.log | sed 's/^\t/ | /' > /tmp/tail.log
-          {
-            echo "## 失败运行 ${RUN_ID} 日志尾部（400 行）"
-            echo '```'
-            cat /tmp/tail.log
-            echo '```'
-          } > /tmp/body.md
-          gh issue create --repo "${GITHUB_REPOSITORY}" \
-            --title "Debug: run ${RUN_ID} failure logs" \
-            --body-file /tmp/body.md
+          gh release edit "26.8.12" --repo "${GITHUB_REPOSITORY}" \
+            --title "Armbian 26.8.12 for Radxa Rock 4D" \
+            --prerelease=false --latest
+          echo "Release 26.8.12 标题已修正并标记为 latest。"
