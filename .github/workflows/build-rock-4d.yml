@@ -113,6 +113,16 @@ jobs:
           - kde-plasma
           - server
     steps:
+      - name: 清理 runner 磁盘空间
+        # 不能用 armbian_runner_clean（descriptinc/free-disk-space）：
+        # 该动作在 ubuntu-26.04 镜像上因缺少 powershell 包而 apt 失败（exit 100）
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet \
+            /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL || true
+          sudo docker image prune --all --force >/dev/null 2>&1 || true
+          sudo swapoff -a 2>/dev/null || true
+          sudo rm -f /mnt/swapfile 2>/dev/null || true
+          df -h /
       - name: 使用 Armbian 构建框架构建镜像
         if: >-
           (matrix.ui == 'kde-plasma' && needs.check.outputs.build_kde == 'true') ||
@@ -127,8 +137,6 @@ jobs:
           armbian_release: ${{ inputs.ubuntu_release || 'resolute' }}
           armbian_ui: ${{ matrix.ui }}
           armbian_version: ${{ needs.check.outputs.version }}
-          # 清理 GitHub runner 磁盘空间（官方推荐）
-          armbian_runner_clean: yes
           # 先以 pre-release 上传，全部镜像就绪后由 promote 任务转正
           armbian_release_prerelease: true
           armbian_release_title: "Armbian ${{ needs.check.outputs.version }} for Radxa Rock 4D"
@@ -158,3 +166,32 @@ jobs:
           gh release edit "${VERSION}" --repo "${GITHUB_REPOSITORY}" \
             --prerelease=false --latest
           echo "Release ${VERSION} 已发布为正式版。"
+
+  report-failure:
+    name: 构建失败时发布日志到 Issue
+    needs: [check, build]
+    if: ${{ always() && needs.build.result == 'failure' }}
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: 将失败日志尾部发布到 Issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh run view "${GITHUB_RUN_ID}" --repo "${GITHUB_REPOSITORY}" \
+            --log-failed > /tmp/all.log || true
+          tail -n 300 /tmp/all.log | sed 's/^\t/ | /' > /tmp/tail.log
+          {
+            echo "## 工作流运行失败（run ${GITHUB_RUN_ID}）"
+            echo ""
+            echo "日志尾部（最后 300 行）："
+            echo ""
+            echo '```'
+            cat /tmp/tail.log
+            echo '```'
+          } > /tmp/body.md
+          gh issue create --repo "${GITHUB_REPOSITORY}" \
+            --title "Build failed: run ${GITHUB_RUN_ID}" \
+            --body-file /tmp/body.md

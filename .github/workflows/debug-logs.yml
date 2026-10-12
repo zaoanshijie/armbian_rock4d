@@ -1,9 +1,8 @@
 name: Debug failed run logs
 
+# 已弃用：主工作流的 report-failure 任务会在构建失败时自动发布日志。
+# 仅保留手动触发以备调试使用。
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
 
 permissions:
@@ -14,21 +13,20 @@ jobs:
   dump-logs:
     runs-on: ubuntu-latest
     steps:
-      - name: 导出失败运行 38241709451 的日志尾部并发 Issue
+      - name: 导出指定运行的失败日志并发 Issue
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          gh run view 38241709451 --repo "${GITHUB_REPOSITORY}" --log-failed > /tmp/all.log || true
-          echo "total lines: $(wc -l < /tmp/all.log)"
-          # 截取失败点前后的日志（去掉制表符前缀便于阅读）
+          RUN_ID="${RUN_ID:-38241709451}"
+          gh run view "${RUN_ID}" --repo "${GITHUB_REPOSITORY}" --log-failed > /tmp/all.log || true
           tail -n 400 /tmp/all.log | sed 's/^\t/ | /' > /tmp/tail.log
           {
-            echo "## 失败运行 38241709451 日志尾部（400 行）"
+            echo "## 失败运行 ${RUN_ID} 日志尾部（400 行）"
             echo '```'
             cat /tmp/tail.log
             echo '```'
           } > /tmp/body.md
           gh issue create --repo "${GITHUB_REPOSITORY}" \
-            --title "Debug: run 38241709451 failure logs" \
+            --title "Debug: run ${RUN_ID} failure logs" \
             --body-file /tmp/body.md
