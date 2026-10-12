@@ -35,7 +35,7 @@ permissions:
 
 # 不允许两个构建同时运行：排队而不是取消
 concurrency:
-  group: armbian-rock-4d
+  group: armbian-rock-4d-build
   cancel-in-progress: false
 
 jobs:
@@ -100,7 +100,11 @@ jobs:
     if: >-
       needs.check.outputs.build_kde == 'true' ||
       needs.check.outputs.build_cli == 'true'
-    runs-on: ubuntu-latest
+    # 必须用 ubuntu-26.04（而非 ubuntu-latest=24.04）作为构建宿主机：
+    # resolute 的 tar 需要 openat2 系统调用，24.04 的 qemu-user 8.2 不支持，
+    # 会导致 linux-headers 安装进 arm64 rootfs 时失败
+    # （上游问题 armbian/build#10713，维护者的解决方案就是用 resolute 宿主机）
+    runs-on: ubuntu-26.04
     timeout-minutes: 350
     strategy:
       fail-fast: false
