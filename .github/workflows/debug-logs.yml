@@ -1,0 +1,34 @@
+name: Debug failed run logs
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  dump-logs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 导出失败运行 38241709451 的日志尾部并发 Issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh run view 38241709451 --repo "${GITHUB_REPOSITORY}" --log-failed > /tmp/all.log || true
+          echo "total lines: $(wc -l < /tmp/all.log)"
+          # 截取失败点前后的日志（去掉制表符前缀便于阅读）
+          tail -n 400 /tmp/all.log | sed 's/^\t/ | /' > /tmp/tail.log
+          {
+            echo "## 失败运行 38241709451 日志尾部（400 行）"
+            echo '```'
+            cat /tmp/tail.log
+            echo '```'
+          } > /tmp/body.md
+          gh issue create --repo "${GITHUB_REPOSITORY}" \
+            --title "Debug: run 38241709451 failure logs" \
+            --body-file /tmp/body.md
